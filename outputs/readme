@@ -1,0 +1,7 @@
+This directory contains all outputs I used in the homework
+
+- gru_tv_loss: Find the best epochs for GRU models
+- transformer_tv_loss: Find the best epochs for Transformer models
+- ***_time.txt: Track training time
+- valid_all.txt: Evaluate models on validation set
+- test_all.txt: Evaluate models on test set

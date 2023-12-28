@@ -1,11 +1,10 @@
+import math
 import torch
 from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
 from sklearn.model_selection import train_test_split
 
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
 
 
 class MedicalDataset(Dataset):
@@ -36,8 +35,9 @@ class MedicalDataset(Dataset):
             desc_len = self.max_len-1
         if diagn_len >= self.max_len:
             diagn_len = self.max_len-1
+        # add eos token
         description[desc_len] = 2
-        diagnosis[diagn_len] = 2
+        diagnosis[diagn_len] = 2 
         return description, diagnosis, desc_len, diagn_len
 
 def load_datasets(data_path, test_size=0.2, random_state=42, batch_size=64):
@@ -103,6 +103,7 @@ if __name__ == '__main__':
             print(id, 'diagn', diagn_int)
     pass
     print(max_char)
+    
 
 def mask_seq(seq, seq_len):
     mask = torch.zeros(seq.shape, dtype=torch.float32)
@@ -110,24 +111,66 @@ def mask_seq(seq, seq_len):
         mask[i, :seq_len[i]] = 1
     return mask
 
-def sequence_mask(X, valid_len, value=0):
-    """在序列中屏蔽不相关的项"""
-    maxlen = X.size(1)
-    mask = torch.arange((maxlen), dtype=torch.float32,
-                        device=X.device)[None, :] < valid_len[:, None]
-    X[~mask] = value
-    return X
+def generate_length_mask(X:torch.Tensor, valid_length:torch.Tensor) -> torch.Tensor:
+    batch_size = X.shape[0]
+    max_length = X.shape[1]
+    mask = torch.arange(max_length, device=X.device).expand(batch_size, max_length) >= valid_length.unsqueeze(1)
+    return mask
 
-class MaskedSoftmaxCELoss(nn.CrossEntropyLoss):
-    """带遮蔽的softmax交叉熵损失函数"""
-    # pred的形状：(batch_size,num_steps,vocab_size)
-    # label的形状：(batch_size,num_steps)
-    # valid_len的形状：(batch_size,)
-    def forward(self, pred, label, valid_len):
-        weights = torch.ones_like(label)
-        weights = sequence_mask(weights, valid_len)
-        self.reduction='none'
-        unweighted_loss = super(MaskedSoftmaxCELoss, self).forward(
-            pred.permute(0, 2, 1), label)
-        weighted_loss = (unweighted_loss * weights).mean(dim=1)
-        return weighted_loss
+def generate_square_subsequent_mask(sz) -> torch.Tensor:
+    mask = (torch.triu(torch.ones((sz, sz))) == 1).transpose(0, 1)
+    mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+    return mask
+
+def generate_masks(src:torch.Tensor, src_len:torch.Tensor, tgt:torch.Tensor, tgt_len:torch.Tensor, device):
+    """Generate masks for transformer model from batch of sequences and their lengths
+    Args:
+        src (torch.Tensor): shape(batch_size, max_len) source sequence
+        src_len (torch.Tensor): shape(batch_size,) source valid sequence
+        tgt (torch.Tensor): shape(batch_size, max_len) target sequence
+        tgt_len (torch.Tensor): shape(batch_size,) target valid sequence
+        device (_type_): device to move masks to
+
+    Returns:
+        src_mask(torch.Tensor): shape(max_len, max_len) source mask
+        tgt_mask(torch.Tensor): shape(max_len, max_len) target mask
+        src_key_padding_mask(torch.Tensor): shape(batch_size, max_len) source key padding mask
+        tgt_key_padding_mask(torch.Tensor): shape(batch_size, max_len) target key padding mask
+        memory_key_padding_mask(torch.Tensor): shape(batch_size, max_len) memory key padding mask = src_key_padding_mask
+    """
+    src_seq_len = src.shape[1]
+    tgt_seq_len = tgt.shape[1]
+    src_mask = torch.zeros((src_seq_len, src_seq_len),device=device).type(torch.bool) # encoder or decoder can use all infomation from src
+    tgt_mask = generate_square_subsequent_mask(tgt_seq_len)
+    src_key_padding_mask = generate_length_mask(src, src_len)
+    tgt_key_padding_mask = generate_length_mask(tgt, tgt_len)
+    memory_key_padding_mask = src_key_padding_mask
+    # move masks to device
+    src_mask = src_mask.to(device)
+    tgt_mask = tgt_mask.to(device)
+    src_key_padding_mask = src_key_padding_mask.to(device)
+    tgt_key_padding_mask = tgt_key_padding_mask.to(device)
+    memory_key_padding_mask = memory_key_padding_mask.to(device)
+    return src_mask, tgt_mask, src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask
+
+
+# helper Module that adds positional encoding to the token embedding to introduce a notion of word order.
+class PositionalEncoding(nn.Module):
+    def __init__(self,
+                 emb_size: int,
+                 dropout: float,
+                 maxlen: int = 5000):
+        super(PositionalEncoding, self).__init__()
+        den = torch.exp(- torch.arange(0, emb_size, 2)* math.log(10000) / emb_size)
+        pos = torch.arange(0, maxlen).reshape(maxlen, 1)
+        pos_embedding = torch.zeros((maxlen, emb_size))
+        pos_embedding[:, 0::2] = torch.sin(pos * den)
+        pos_embedding[:, 1::2] = torch.cos(pos * den)
+        pos_embedding = pos_embedding.unsqueeze(-2)
+
+        self.dropout = nn.Dropout(dropout)
+        self.register_buffer('pos_embedding', pos_embedding)
+
+    def forward(self, token_embedding: torch.Tensor):
+        return self.dropout(token_embedding + self.pos_embedding[:token_embedding.size(0), :])
+    

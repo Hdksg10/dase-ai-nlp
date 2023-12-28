@@ -66,37 +66,41 @@ class GRUDecoder(Decoder):
         Returns:
             x: shape(batch_size, max_len, vocab_size)
         """
-        # x = x.permute(1, 0, 2) # shape(max_len, batch_size, vocab_size)
-        # print(state.shape)
-        # state = state[:, -1, :]
-        # state = state.unsqueeze(1)
-        # state = state.repeat
-        # print(state.shape)
         x = self.embdding(x)
         x, state = self.layers(x, state)
-        # print(x.shape)
         x = self.fc(x)
         return x, state
 
 class GRUEncoderDecoder(EncoderDecoder):
-    def __init__(self, vocab_size, num_hiddens, embedding_size, num_layers, direction = 1, *args, **kwargs):
-        encoder = GRUEncoder(vocab_size, num_hiddens, embedding_size, num_layers, direction = 1)
-        decoder = GRUDecoder(vocab_size, num_hiddens, embedding_size, num_layers, direction = 1)
+    def __init__(self, vocab_size, num_hiddens, embedding_size, encoder_layers, decoder_layers, direction = 1, *args, **kwargs):
+        encoder = GRUEncoder(vocab_size, num_hiddens, embedding_size, encoder_layers, direction = direction)
+        decoder = GRUDecoder(vocab_size, num_hiddens, embedding_size, decoder_layers, direction = direction)
         super().__init__(encoder, decoder)
     
     def forward(self, x, y):
         return super().forward(x, y)
     
-    # def train_step(self, x, y, criterion, optimizer):
-    #     optimizer.zero_grad()
-    #     y_pred = self.forward(x)
-    #     loss = criterion(y_pred, y)
-    #     loss.backward()
-    #     optimizer.step()
-    #     return loss.item()
     
-    def predict(self, x):
-        
+    def predict(self, src, src_len, max_len, device):
+        bos_token = 1
+        eos_token = 2
+        self.eval()
+        src = src.to(device)
+        encoded_out = self.encoder(src)
+        state = self.decoder.init_state(encoded_out)
+        # the decoder take input with shape(batch_size, seq_len)
+        tgt = torch.tensor([bos_token], dtype=torch.long).unsqueeze(0).to(device)
+        tgt_seq = []
+        for _ in range(max_len):
+            out, _ = self.decoder(tgt, state)
+            out = out.argmax(dim=2)
+            tgt = torch.cat((tgt, out[:, -1].unsqueeze(0)), dim=1)
+            # print(f"step output: {tgt}")
+            tgt_item = tgt[:, -1].unsqueeze(0).item()
+            if tgt_item == eos_token:
+                break
+            tgt_seq.append(tgt_item)
+        return tgt_seq
         pass
     
     
@@ -105,7 +109,7 @@ if __name__ == '__main__':
     x = torch.tensor([[1, 2, 3], [4, 5, 6]])
     y = torch.tensor([[1, 2, 3], [4, 5, 6]])
     
-    model = GRUEncoderDecoder(10, 256, 128, 2)
+    model = GRUEncoderDecoder(10, 256, 128, 2, 2, 1)
     enc_out = model.encoder(x)
     state = model.decoder.init_state(enc_out)
     print(state.shape)
